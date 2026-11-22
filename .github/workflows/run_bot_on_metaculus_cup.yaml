@@ -1,9 +1,9 @@
 name: Forecast on Metaculus Cup
 
+# Manual only. Each run re-forecasts every open Metaculus Cup question, so a
+# schedule would spend the API budget again and again.
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 0 */2 * *" # runs at midnight every 2 days
 
 # Add concurrency group to prevent parallel runs
 concurrency:
