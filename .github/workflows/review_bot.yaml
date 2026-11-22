@@ -9,6 +9,9 @@ on:
   schedule:
     - cron: "0 6 * * 1" # weekly, Monday morning
 
+permissions:
+  contents: write
+
 # Add concurrency group to prevent parallel runs
 concurrency:
   group: ${{ github.workflow }}
@@ -16,11 +19,9 @@ concurrency:
 
 # Scores how the bot's resolved forecasts turned out. Read-only: it makes no
 # forecasts, spends nothing on LLMs, and publishes nothing.
-# The weekly run is off by default: set the repository variable REVIEW_BOT_ENABLED to
-# true to turn it on. Running it by hand always works.
+# Runs weekly and by hand. The review is also saved to the bot-data branch under reviews/.
 jobs:
   review_job:
-    if: vars.REVIEW_BOT_ENABLED == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -52,3 +53,13 @@ jobs:
             review.json
             review.md
           retention-days: 90
+      - name: Save the review to the bot-data branch
+        if: always()
+        run: |
+          mkdir -p .bot_data/reviews
+          stamp="$(date -u +%Y-%m-%d)"
+          [ -f review.md ] && cp review.md ".bot_data/reviews/${stamp}_review.md"
+          [ -f review.json ] && cp review.json ".bot_data/reviews/${stamp}_review.json"
+          scripts/push_bot_data.sh .bot_data
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -5,10 +5,14 @@ from datetime import datetime, timezone
 from typing import Literal
 
 import os
+from contextvars import ContextVar
 
 import dotenv
 
+import bot_config
 import budget
+import experiment
+import run_log
 
 # Runtime helpers (env validation, banners, dependency-warning suppression).
 from bot_helpers import (
@@ -49,8 +53,9 @@ from forecasting_tools import (
 dotenv.load_dotenv()
 logger = logging.getLogger(__name__)
 
-RESEARCH_MODEL = "anthropic/claude-sonnet-5-5"
-HELPER_MODEL = "anthropic/claude-sonnet-5-5"
+# The slot the current forecast belongs to. Set per asyncio task, so forecasts
+# running side by side each see their own slot.
+_CURRENT_SLOT: ContextVar[experiment.Slot | None] = ContextVar("current_slot", default=None)
 
 
 def _asknews_is_configured() -> bool:
@@ -58,34 +63,56 @@ def _asknews_is_configured() -> bool:
     return has_client or bool(os.getenv("ASKNEWS_API_KEY"))
 
 
+def _forecast_llm(model: str, effort: str = "high") -> GeneralLlm:
+    """
+    A model set up to forecast. Temperature is left unset because the current
+    Claude models do not accept it. The cache setting marks the first message
+    (the shared question and research) as cacheable, so later forecasts on the
+    same question read it at the cached price.
+    """
+    return GeneralLlm(
+        model=model,
+        reasoning_effort=effort,
+        max_tokens=32000,
+        timeout=900,
+        allowed_tries=3,
+        cache_control_injection_points=[{"location": "message", "index": 0}],
+    )
+
+
 def build_llms(tier: budget.Tier) -> dict[str, GeneralLlm]:
     """
-    Models for one run. The forecaster comes from the budget tier; research,
-    summarising and output parsing always use the cheaper helper model.
-    Temperature is left unset because the current Claude models do not accept it.
+    Models the forecasting-tools framework asks for by name. "default" comes
+    from the budget tier; research, summarising and output parsing always use
+    the helper model.
     """
     assert tier.forecaster_model is not None
     return {
-        "default": GeneralLlm(
-            model=tier.forecaster_model,
-            reasoning_effort="high",
-            max_tokens=32000,
-            timeout=900,
-            allowed_tries=3,
-        ),
+        "default": _forecast_llm(tier.forecaster_model),
         "researcher": GeneralLlm(
-            model=RESEARCH_MODEL,
+            model=bot_config.HELPER_MODEL,
             web_search_options={"search_context_size": "medium"},
             max_tokens=16000,
             timeout=900,
             allowed_tries=3,
         ),
         "summarizer": GeneralLlm(
-            model=HELPER_MODEL, max_tokens=8000, timeout=300, allowed_tries=3
+            model=bot_config.HELPER_MODEL, max_tokens=8000, timeout=300, allowed_tries=3
         ),
         "parser": GeneralLlm(
-            model=HELPER_MODEL, max_tokens=8000, timeout=300, allowed_tries=3
+            model=bot_config.HELPER_MODEL, max_tokens=8000, timeout=300, allowed_tries=3
         ),
+    }
+
+
+def build_slot_llms(tier: budget.Tier) -> dict[str, GeneralLlm]:
+    """Models the forecast slots use, keyed by experiment.Slot.llm_key."""
+    assert tier.forecaster_model is not None
+    return {
+        "forecaster": _forecast_llm(tier.forecaster_model),
+        "economy": _forecast_llm(bot_config.ECONOMY_MODEL),
+        "helper": _forecast_llm(bot_config.HELPER_MODEL),
+        "forecaster_medium": _forecast_llm(tier.forecaster_model, effort="medium"),
     }
 
 
@@ -176,6 +203,128 @@ class FireflyBot(ForecastBot):
     )
     _concurrency_limiter = asyncio.Semaphore(_max_concurrent_questions)
     _structure_output_validation_samples = 2
+
+    # Set in __main__ before the bot runs.
+    slots: list[experiment.Slot] = []
+    slot_llms: dict[str, GeneralLlm] = {}
+    run_mode: str = "tournament"
+
+    ##################################### SLOTS #####################################
+
+    async def _research_and_make_predictions(self, question: MetaculusQuestion):
+        """
+        Same job as the framework version, but each forecast runs in a named
+        slot (see experiment.py) and every slot's result is logged.
+
+        Slots run in two waves. The first slot for each model goes first; the
+        rest follow once it has finished, so they find the shared question and
+        research already in that model's prompt cache.
+        """
+        from forecasting_tools.data_models.forecast_report import ResearchWithPredictions
+
+        notepad = await self._get_notepad(question)
+        notepad.total_research_reports_attempted += 1
+        research = await self.run_research(question)
+        summary_report = await self.summarize_research(question, research)
+        research_to_use = (
+            summary_report if self.use_research_summary_to_forecast else research
+        )
+
+        slots = self.slots or [experiment.Slot("control_1", True, "forecaster", "template")]
+        first_wave: list[experiment.Slot] = []
+        second_wave: list[experiment.Slot] = []
+        models_started: set[str] = set()
+        for slot in slots:
+            if slot.llm_key in models_started:
+                second_wave.append(slot)
+            else:
+                models_started.add(slot.llm_key)
+                first_wave.append(slot)
+
+        outcomes: dict[str, ReasonedPrediction | BaseException] = {}
+        for wave in (first_wave, second_wave):
+            if not wave:
+                continue
+            results = await asyncio.gather(
+                *(self._predict_in_slot(question, research_to_use, slot) for slot in wave),
+                return_exceptions=True,
+            )
+            for slot, result in zip(wave, results):
+                if isinstance(result, (KeyboardInterrupt, SystemExit, asyncio.CancelledError)):
+                    raise result
+                outcomes[slot.name] = result
+
+        slot_results = []
+        predictions = []
+        errors: list[str] = []
+        for slot in slots:
+            result = outcomes[slot.name]
+            entry = {
+                "slot": slot.name,
+                "submitted": slot.submitted,
+                "model": self.slot_llms[slot.llm_key].model if slot.llm_key in self.slot_llms else None,
+                "llm_key": slot.llm_key,
+                "variant": slot.variant,
+            }
+            if isinstance(result, BaseException):
+                entry["error"] = f"{type(result).__name__}: {result}"
+                if slot.submitted:
+                    errors.append(f"{slot.name}: {entry['error']}")
+                else:
+                    logger.warning(f"Shadow forecast {slot.name} failed for {question.page_url}: {result}")
+            else:
+                entry["prediction"] = result.prediction_value
+                entry["reasoning"] = result.reasoning
+                if slot.submitted:
+                    predictions.append(result)
+            slot_results.append(entry)
+        run_log.record_question(self.run_mode, question, research, slot_results)
+
+        if errors:
+            logger.warning(f"Encountered errors while predicting: {errors}")
+        if not predictions:
+            raise RuntimeError(
+                f"Every submitted forecast failed for {question.page_url}: {errors}"
+            )
+        return ResearchWithPredictions(
+            research_report=research,
+            summary_report=summary_report,
+            errors=errors,
+            predictions=predictions,
+        )
+
+    async def _predict_in_slot(
+        self, question: MetaculusQuestion, research: str, slot: experiment.Slot
+    ) -> ReasonedPrediction:
+        _CURRENT_SLOT.set(slot)
+        return await self._make_prediction(question, research)
+
+    async def _invoke_forecaster(self, prompt: str) -> str:
+        """
+        Send a forecast prompt to the current slot's model. The prompt goes out
+        as two messages, shared context then instructions, so the context can be
+        cached across the slots of one question.
+        """
+        slot = _CURRENT_SLOT.get()
+        if slot is None or slot.llm_key not in self.slot_llms:
+            return await self.get_llm("default", "llm").invoke(prompt)
+        llm = self.slot_llms[slot.llm_key]
+        context, instructions = experiment.split_prompt(prompt)
+        instructions = experiment.apply_variant(instructions, slot.variant)
+        if not context:
+            return await llm.invoke(instructions)
+        try:
+            return await llm.invoke(
+                [
+                    {"role": "user", "content": context},
+                    {"role": "user", "content": instructions},
+                ]
+            )
+        except Exception as error:
+            logger.warning(
+                f"Two-message forecast call failed in slot {slot.name} ({error}); retrying as one message"
+            )
+            return await llm.invoke(context + instructions)
 
     ##################################### RESEARCH #####################################
 
@@ -289,7 +438,7 @@ class FireflyBot(ForecastBot):
         question: BinaryQuestion,
         prompt: str,
     ) -> ReasonedPrediction[float]:
-        reasoning = await self.get_llm("default", "llm").invoke(prompt)
+        reasoning = await self._invoke_forecaster(prompt)
         logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
         parsing_instructions = clean_indents(
             f"""
@@ -371,7 +520,7 @@ class FireflyBot(ForecastBot):
             {self._create_resolved_question_parsing_message()}
             """
         )
-        reasoning = await self.get_llm("default", "llm").invoke(prompt)
+        reasoning = await self._invoke_forecaster(prompt)
         logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
         predicted_option_list: PredictedOptionList = await structure_output(
             text_to_structure=reasoning,
@@ -454,7 +603,7 @@ class FireflyBot(ForecastBot):
         question: NumericQuestion,
         prompt: str,
     ) -> ReasonedPrediction[NumericDistribution]:
-        reasoning = await self.get_llm("default", "llm").invoke(prompt)
+        reasoning = await self._invoke_forecaster(prompt)
         logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
         parsing_instructions = clean_indents(
             f"""
@@ -550,7 +699,7 @@ class FireflyBot(ForecastBot):
         question: DateQuestion,
         prompt: str,
     ) -> ReasonedPrediction[NumericDistribution]:
-        reasoning = await self.get_llm("default", "llm").invoke(prompt)
+        reasoning = await self._invoke_forecaster(prompt)
         logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
         parsing_instructions = clean_indents(
             f"""
@@ -773,6 +922,17 @@ if __name__ == "__main__":
             "Raise BUDGET_USD or wait for the next credit cycle."
         )
         _write_github_output("ledger_changed", "false")
+        run_log.record_status(
+            run_mode,
+            {
+                "tier": tier.name,
+                "questions_forecast": 0,
+                "errors": ["cycle budget used up; nothing forecast"],
+                "cycle_spent_usd": round(spent_before, 4),
+                "cycle_budget_usd": budget.budget_usd(),
+                "cycle_start": budget.cycle_start().isoformat(),
+            },
+        )
         raise SystemExit(0)
 
     bot = FireflyBot(
@@ -785,6 +945,12 @@ if __name__ == "__main__":
         extra_metadata_in_explanation=True,
         llms=build_llms(tier),
     )
+    bot.slots = experiment.build_slots(tier)
+    bot.slot_llms = build_slot_llms(tier)
+    bot.run_mode = run_mode
+    logger.info("Slots: " + ", ".join(
+        f"{slot.name}[{slot.llm_key}/{slot.variant}{'' if slot.submitted else '/shadow'}]" for slot in bot.slots
+    ))
 
     # Per-mode tournament URL shown in the summary banner footer. These
     # piggyback on the forecasting_tools SDK constants and need updating
@@ -846,6 +1012,29 @@ if __name__ == "__main__":
     logger.info(
         f"Budget: this run cost ${run_cost:.2f}; ${spent_after:.2f} of "
         f"${budget.budget_usd():.2f} spent this cycle"
+    )
+    report_errors = [
+        f"{type(report).__name__}: {report}"[:500]
+        for report in forecast_reports
+        if isinstance(report, BaseException)
+    ]
+    if run_error is not None:
+        report_errors.append(f"run stopped: {type(run_error).__name__}: {run_error}"[:500])
+    run_log.record_status(
+        run_mode,
+        {
+            "tier": tier.name,
+            "forecaster_model": tier.forecaster_model,
+            "slots": [slot.name for slot in bot.slots],
+            "questions_forecast": sum(
+                1 for report in forecast_reports if not isinstance(report, BaseException)
+            ),
+            "errors": report_errors,
+            "run_cost_usd": round(run_cost, 4),
+            "cycle_spent_usd": round(spent_after, 4),
+            "cycle_budget_usd": budget.budget_usd(),
+            "cycle_start": budget.cycle_start().isoformat(),
+        },
     )
     if run_error is not None:
         raise run_error

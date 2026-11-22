@@ -1,0 +1,51 @@
+name: Daily housekeeping
+
+# Once a day: check for newer Anthropic models and save the bot's leaderboard
+# standing. Makes no forecasts and uses no LLM tokens. Results go to the
+# bot-data branch (status/models.json and track_record/).
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 21 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  housekeeping_job:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.0
+        with:
+          version: "0.13.1"
+      - name: Install dependencies
+        run: uv sync --locked --group integrations
+      - name: Check for newer models
+        continue-on-error: true
+        run: uv run python model_watch.py
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          FORECASTER_MODEL: ${{ vars.FORECASTER_MODEL }}
+          ECONOMY_MODEL: ${{ vars.ECONOMY_MODEL }}
+          HELPER_MODEL: ${{ vars.HELPER_MODEL }}
+      - name: Save leaderboard standing
+        continue-on-error: true
+        # Numeric Metaculus project ids. 33121 = Fall 2026 FutureEval Bot Tournament.
+        run: uv run python track_record.py ${{ vars.TRACK_RECORD_PROJECT_IDS || '33121' }}
+        env:
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+      - name: Push to the bot-data branch
+        if: always()
+        run: scripts/push_bot_data.sh .bot_data
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
