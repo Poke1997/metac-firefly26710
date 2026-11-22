@@ -4,7 +4,11 @@ import logging
 from datetime import datetime, timezone
 from typing import Literal
 
+import os
+
 import dotenv
+
+import budget
 
 # Runtime helpers (env validation, banners, dependency-warning suppression).
 from bot_helpers import (
@@ -22,6 +26,7 @@ from forecasting_tools import (
     ForecastBot,
     GeneralLlm,
     MetaculusClient,
+    MonetaryCostManager,
     MetaculusQuestion,
     MultipleChoiceQuestion,
     NumericDistribution,
@@ -44,8 +49,54 @@ from forecasting_tools import (
 dotenv.load_dotenv()
 logger = logging.getLogger(__name__)
 
+RESEARCH_MODEL = "anthropic/claude-sonnet-5-5"
+HELPER_MODEL = "anthropic/claude-sonnet-5-5"
 
-class FallTemplateBot2026(ForecastBot):
+
+def _asknews_is_configured() -> bool:
+    has_client = bool(os.getenv("ASKNEWS_CLIENT_ID")) and bool(os.getenv("ASKNEWS_SECRET"))
+    return has_client or bool(os.getenv("ASKNEWS_API_KEY"))
+
+
+def build_llms(tier: budget.Tier) -> dict[str, GeneralLlm]:
+    """
+    Models for one run. The forecaster comes from the budget tier; research,
+    summarising and output parsing always use the cheaper helper model.
+    Temperature is left unset because the current Claude models do not accept it.
+    """
+    assert tier.forecaster_model is not None
+    return {
+        "default": GeneralLlm(
+            model=tier.forecaster_model,
+            reasoning_effort="high",
+            max_tokens=32000,
+            timeout=900,
+            allowed_tries=3,
+        ),
+        "researcher": GeneralLlm(
+            model=RESEARCH_MODEL,
+            web_search_options={"search_context_size": "medium"},
+            max_tokens=16000,
+            timeout=900,
+            allowed_tries=3,
+        ),
+        "summarizer": GeneralLlm(
+            model=HELPER_MODEL, max_tokens=8000, timeout=300, allowed_tries=3
+        ),
+        "parser": GeneralLlm(
+            model=HELPER_MODEL, max_tokens=8000, timeout=300, allowed_tries=3
+        ),
+    }
+
+
+def _write_github_output(name: str, value: str) -> None:
+    output_path = os.getenv("GITHUB_OUTPUT")
+    if output_path:
+        with open(output_path, "a") as output_file:
+            output_file.write(f"{name}={value}\n")
+
+
+class FireflyBot(ForecastBot):
     """
     This is the template bot for the Fall 2026 FutureEval Bot Tournament.
     This is a copy of what is used by Metaculus to run the Metac Bots in our benchmark, provided as a template for new bot makers.
@@ -129,61 +180,64 @@ class FallTemplateBot2026(ForecastBot):
     ##################################### RESEARCH #####################################
 
     async def run_research(self, question: MetaculusQuestion) -> str:
+        """
+        Research = a web-search report from the "researcher" model, plus AskNews
+        summaries when AskNews credentials are set. A failure in one source never
+        blocks the other; if both fail the question is forecast without research.
+        """
         async with self._concurrency_limiter:
-            research = ""
+            sections: list[str] = []
+
             researcher = self.get_llm("researcher")
-
-            prompt = self._get_research_prompt(question, researcher)
-
             if isinstance(researcher, GeneralLlm):
-                research = await researcher.invoke(prompt)
-            elif (
-                researcher == "asknews/news-summaries"
-                or researcher == "asknews/deep-research/low-depth"
-                or researcher == "asknews/deep-research/medium-depth"
-                or researcher == "asknews/deep-research/high-depth"
-            ):
-                research = await AskNewsSearcher().call_preconfigured_version(
-                    researcher, prompt
-                )
-            elif researcher.startswith("smart-searcher"):
-                model_name = researcher.removeprefix("smart-searcher/")
-                searcher = SmartSearcher(
-                    model=model_name,
-                    temperature=0,
-                    num_searches_to_run=2,
-                    num_sites_per_search=10,
-                    use_advanced_filters=False,
-                )
-                research = await searcher.invoke(prompt)
-            elif not researcher or researcher == "None" or researcher == "no_research":
-                research = ""
-            else:
-                research = await self.get_llm("researcher", "llm").invoke(prompt)
+                try:
+                    report = await researcher.invoke(self._get_research_prompt(question))
+                    sections.append(f"## Web research\n{report}")
+                except Exception as error:
+                    logger.error(f"Web research failed for {question.page_url}: {error}")
+
+            if _asknews_is_configured():
+                try:
+                    news = await AskNewsSearcher().call_preconfigured_version(
+                        "asknews/news-summaries", question.question_text
+                    )
+                    sections.append(f"## News summaries (AskNews)\n{news}")
+                except Exception as error:
+                    logger.error(f"AskNews failed for {question.page_url}: {error}")
+
+            research = "\n\n".join(sections)
+            if not research:
+                logger.warning(f"No research found for {question.page_url}")
             logger.info(f"Found Research for URL {question.page_url}:\n{research}")
             return research
 
     @staticmethod
-    def _get_research_prompt(
-        question: MetaculusQuestion, researcher: str | GeneralLlm
-    ) -> str:
-        if GeneralLlm.to_model_name(researcher) == "asknews/news-summaries":
-            return question.question_text
-
+    def _get_research_prompt(question: MetaculusQuestion) -> str:
         prompt = clean_indents(
             f"""
-            You are an assistant to a superforecaster.
-            The superforecaster will give you a question they intend to forecast on.
-            To be a great assistant, you generate a concise but detailed rundown of the most relevant news, including if the question would resolve Yes or No based on current information.
-            You do not produce forecasts yourself.
+            You are a research assistant to a superforecaster. Today is {datetime.now(timezone.utc).strftime("%Y-%m-%d")}.
+            The superforecaster will forecast the question below. Search the web and write a concise, factual briefing. You do not produce a forecast yourself.
 
             Question:
             {question.question_text}
+
+            Background:
+            {question.background_info}
 
             This question's outcome will be determined by the specific criteria below:
             {question.resolution_criteria}
 
             {question.fine_print}
+
+            Cover, in this order:
+            1. Current status: the latest facts that bear on the resolution criteria, each with its date. Say plainly whether the criteria look met, not met, or undecided on current information.
+            2. The source the question will resolve from, if one is named: what it shows right now (the latest published value or statement).
+            3. Base rate: how often comparable events have happened over comparable periods, or how the relevant number has moved historically, with figures.
+            4. Scheduled events before the resolution date that could change the outcome.
+            5. What prediction markets or other forecasters say, if you find any, with the numbers.
+            6. The strongest evidence on each side.
+
+            Prefer primary and recent sources. Give dates for facts. If you could not find something, say so instead of guessing.
             """
         )
         return prompt
@@ -689,7 +743,7 @@ if __name__ == "__main__":
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
-    parser = argparse.ArgumentParser(description="Run the template forecasting bot")
+    parser = argparse.ArgumentParser(description="Run the forecasting bot")
     parser.add_argument(
         "--mode",
         type=str,
@@ -704,28 +758,32 @@ if __name__ == "__main__":
     publish_to_metaculus = True
     print_startup_banner(run_mode, will_publish=publish_to_metaculus)
 
-    # Configure the bot. The `llms=` block below is commented out to use
-    # whichever default models forecasting-tools picks based on your env vars;
-    # uncomment and edit to pin specific models.
-    template_bot = FallTemplateBot2026(
+    # Budget guard: pick the model tier from what the bot has already spent in
+    # this credit cycle, and stop before the cycle budget is exceeded.
+    spent_before = budget.load_spent()
+    tier = budget.pick_tier(spent_before)
+    run_cap = budget.run_cap_usd(spent_before)
+    logger.info(
+        f"Budget: ${spent_before:.2f} of ${budget.budget_usd():.2f} spent since "
+        f"{budget.cycle_start().isoformat()}; tier '{tier.name}'; this run may spend up to ${run_cap:.2f}"
+    )
+    if tier.forecaster_model is None:
+        logger.error(
+            "Cycle budget is used up, so this run forecasts nothing. "
+            "Raise BUDGET_USD or wait for the next credit cycle."
+        )
+        _write_github_output("ledger_changed", "false")
+        raise SystemExit(0)
+
+    bot = FireflyBot(
         research_reports_per_question=1,
-        predictions_per_research_report=5,
+        predictions_per_research_report=tier.predictions_per_report,
         use_research_summary_to_forecast=False,
         publish_reports_to_metaculus=publish_to_metaculus,
         folder_to_save_reports_to=None,
         skip_previously_forecasted_questions=True,
         extra_metadata_in_explanation=True,
-        # llms={
-        #     "default": GeneralLlm(
-        #         model="openrouter/openai/gpt-4o",
-        #         temperature=0.3,
-        #         timeout=40,
-        #         allowed_tries=2,
-        #     ),
-        #     "summarizer": "openai/gpt-4o-mini",
-        #     "researcher": "asknews/news-summaries",
-        #     "parser": "openai/gpt-4o-mini",
-        # },
+        llms=build_llms(tier),
     )
 
     # Per-mode tournament URL shown in the summary banner footer. These
@@ -739,43 +797,60 @@ if __name__ == "__main__":
 
     # Dispatch on mode. Each branch produces a list of ForecastReport (or
     # exceptions, since return_exceptions=True) which then flows into the
-    # summary printers below.
+    # summary printers below. Everything runs inside the cost manager, which
+    # raises once the run cap is reached.
     client = MetaculusClient()
-    if run_mode == "tournament":
-        seasonal_tournament_reports = asyncio.run(
-            template_bot.forecast_on_tournament(
-                client.CURRENT_AI_COMPETITION_ID, return_exceptions=True
-            )
-        )
-        minibench_reports = asyncio.run(
-            template_bot.forecast_on_tournament(
-                client.CURRENT_MINIBENCH_ID, return_exceptions=True
-            )
-        )
-        forecast_reports = seasonal_tournament_reports + minibench_reports
-    elif run_mode == "metaculus_cup":
-        # The Metaculus Cup may be uninitialized near the start of a season
-        # (Jan/May/Sep). MetaculusClient.ACX_2025_TOURNAMENT = 32564 and
-        # MetaculusClient.AI_2027_TOURNAMENT_ID = "ai-2027" are also valid
-        # targets here.
-        template_bot.skip_previously_forecasted_questions = False
-        forecast_reports = asyncio.run(
-            template_bot.forecast_on_tournament(
-                client.CURRENT_METACULUS_CUP_ID, return_exceptions=True
-            )
-        )
-    elif run_mode == "test_questions":
-        # The bot-testing-area tournament contains all question types and is
-        # the recommended target for smoke-testing your bot.
-        # https://www.metaculus.com/tournament/bot-testing-area/
-        template_bot.skip_previously_forecasted_questions = False
-        forecast_reports = asyncio.run(
-            template_bot.forecast_on_tournament(
-                "bot-testing-area", return_exceptions=True
-            )
-        )
+    forecast_reports: list = []
+    run_error: BaseException | None = None
+    with MonetaryCostManager(run_cap) as cost_manager:
+        try:
+            if run_mode == "tournament":
+                forecast_reports += asyncio.run(
+                    bot.forecast_on_tournament(
+                        client.CURRENT_AI_COMPETITION_ID, return_exceptions=True
+                    )
+                )
+                if os.getenv("INCLUDE_MINIBENCH", "true").lower() != "false":
+                    forecast_reports += asyncio.run(
+                        bot.forecast_on_tournament(
+                            client.CURRENT_MINIBENCH_ID, return_exceptions=True
+                        )
+                    )
+            elif run_mode == "metaculus_cup":
+                # The Metaculus Cup may be uninitialized near the start of a season
+                # (Jan/May/Sep). MetaculusClient.ACX_2025_TOURNAMENT = 32564 and
+                # MetaculusClient.AI_2027_TOURNAMENT_ID = "ai-2027" are also valid
+                # targets here.
+                bot.skip_previously_forecasted_questions = False
+                forecast_reports += asyncio.run(
+                    bot.forecast_on_tournament(
+                        client.CURRENT_METACULUS_CUP_ID, return_exceptions=True
+                    )
+                )
+            elif run_mode == "test_questions":
+                # The bot-testing-area tournament contains all question types and is
+                # the recommended target for smoke-testing your bot.
+                # https://www.metaculus.com/tournament/bot-testing-area/
+                bot.skip_previously_forecasted_questions = False
+                forecast_reports += asyncio.run(
+                    bot.forecast_on_tournament(
+                        "bot-testing-area", return_exceptions=True
+                    )
+                )
+        except BaseException as error:  # the ledger must be written even if the run dies
+            run_error = error
+        run_cost = cost_manager.current_usage
 
-    template_bot.log_report_summary(forecast_reports)
+    spent_after = budget.record_spend(run_cost) if run_cost > 0 else spent_before
+    _write_github_output("ledger_changed", "true" if run_cost > 0 else "false")
+    logger.info(
+        f"Budget: this run cost ${run_cost:.2f}; ${spent_after:.2f} of "
+        f"${budget.budget_usd():.2f} spent this cycle"
+    )
+    if run_error is not None:
+        raise run_error
+
+    bot.log_report_summary(forecast_reports)
     print_run_summary_banner(
         forecast_reports,
         will_publish=publish_to_metaculus,

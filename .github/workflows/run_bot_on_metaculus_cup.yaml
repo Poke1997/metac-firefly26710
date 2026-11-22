@@ -28,7 +28,15 @@ jobs:
           version: "0.13.1"
       - name: Install dependencies
         run: uv sync --locked
+      # The budget ledger lives in the Actions cache because every run starts on a fresh machine.
+      - name: Restore budget ledger
+        uses: actions/cache/restore@v4
+        with:
+          path: .budget
+          key: budget-ledger-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: budget-ledger-
       - name: Run bot
+        id: run_bot
         run: |
           uv run python main.py --mode metaculus_cup
         # this reads the environment variables from the github repository.
@@ -42,3 +50,14 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ASKNEWS_CLIENT_ID: ${{ secrets.ASKNEWS_CLIENT_ID }}
           ASKNEWS_SECRET: ${{ secrets.ASKNEWS_SECRET }}
+          ASKNEWS_API_KEY: ${{ secrets.ASKNEWS_API_KEY }}
+          # Budget guard settings (see budget.py). Set as repository variables to override the defaults.
+          BUDGET_USD: ${{ vars.BUDGET_USD }}
+          BUDGET_CYCLE_DAY: ${{ vars.BUDGET_CYCLE_DAY }}
+          BUDGET_PER_RUN_USD: ${{ vars.BUDGET_PER_RUN_USD }}
+      - name: Save budget ledger
+        if: always() && steps.run_bot.outputs.ledger_changed == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .budget
+          key: budget-ledger-${{ github.run_id }}-${{ github.run_attempt }}
