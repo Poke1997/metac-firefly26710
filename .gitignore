@@ -2,6 +2,7 @@
 benchmarks/
 sandbox.py
 .budget/
+.bot_data/
 
 
 ### General gitignore ###

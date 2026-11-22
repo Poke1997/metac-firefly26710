@@ -26,6 +26,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+import bot_config
+
 logger = logging.getLogger(__name__)
 
 LEDGER_PATH = Path(".budget") / "ledger.json"
@@ -44,9 +46,9 @@ class Tier:
 
 
 TIERS = {
-    "full": Tier("full", "anthropic/claude-fable-5-2", 3),
-    "economy": Tier("economy", "anthropic/claude-opus-5-5", 3),
-    "minimal": Tier("minimal", "anthropic/claude-sonnet-5-5", 1),
+    "full": Tier("full", bot_config.FORECASTER_MODEL, 3),
+    "economy": Tier("economy", bot_config.ECONOMY_MODEL, 3),
+    "minimal": Tier("minimal", bot_config.HELPER_MODEL, 1),
     "stop": Tier("stop", None, 0),
 }
 

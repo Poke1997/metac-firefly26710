@@ -5,6 +5,10 @@ on:
   schedule:
     - cron: "7,27,47 * * * *" # every 20 min, offset off the hour. Make sure to skip already-forecasted questions!
 
+# The run pushes its records to the bot-data branch.
+permissions:
+  contents: write
+
 # Add concurrency group to prevent parallel runs
 concurrency:
   group: ${{ github.workflow }}
@@ -55,9 +59,21 @@ jobs:
           BUDGET_USD: ${{ vars.BUDGET_USD }}
           BUDGET_CYCLE_DAY: ${{ vars.BUDGET_CYCLE_DAY }}
           BUDGET_PER_RUN_USD: ${{ vars.BUDGET_PER_RUN_USD }}
+          # Model and experiment settings (see bot_config.py). Empty means the default in the code.
+          FORECASTER_MODEL: ${{ vars.FORECASTER_MODEL }}
+          ECONOMY_MODEL: ${{ vars.ECONOMY_MODEL }}
+          HELPER_MODEL: ${{ vars.HELPER_MODEL }}
+          CHALLENGER_VARIANT: ${{ vars.CHALLENGER_VARIANT }}
+          SHADOW_FORECASTS: ${{ vars.SHADOW_FORECASTS }}
+          SHADOWS_UNTIL: ${{ vars.SHADOWS_UNTIL }}
       - name: Save budget ledger
         if: always() && steps.run_bot.outputs.ledger_changed == 'true'
         uses: actions/cache/save@v4
         with:
           path: .budget
           key: budget-ledger-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Push run records to the bot-data branch
+        if: always()
+        run: scripts/push_bot_data.sh .bot_data
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

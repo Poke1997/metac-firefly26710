@@ -1,10 +1,31 @@
 # metaculus-firefly26710
 
-A hobbyist forecasting bot for the Metaculus FutureEval bot tournaments, forked from the Metaculus template. What this fork changes:
+A hobbyist forecasting bot for the Metaculus FutureEval bot tournaments, forked from the Metaculus template.
 
-- **Models:** all Claude, called directly with `ANTHROPIC_API_KEY`. Claude Fable 5.2 forecasts each question three times and the median is submitted; Claude Sonnet 5.5 does the research, summarising and output parsing.
-- **Research:** a web-search briefing from Claude (current status, resolution source, base rates, scheduled events, market prices), plus AskNews summaries when AskNews credentials are set.
-- **Budget guard (`budget.py`):** the bot tracks its own spend per credit cycle and steps down to cheaper models at 70% and 90% of the budget, then stops at 100%. Defaults: $200 per cycle renewing on the 27th (UTC), $25 per run. Override with the repository variables `BUDGET_USD`, `BUDGET_CYCLE_DAY`, `BUDGET_PER_RUN_USD`.
+- Fall 2026 leaderboard: https://www.metaculus.com/tournament/fall-futureeval-2026/
+
+## How it forecasts
+
+- **Research:** Claude Sonnet 5.5 writes a web-search briefing for each question (current status, resolution source, base rates, scheduled events, market prices). AskNews summaries are added when AskNews credentials are set.
+- **Forecast:** Claude Fable 5.2 forecasts each question three times on the same research and the median is submitted.
+- **Models are settings, not code.** `bot_config.py` holds the model names; each can be overridden with a repository variable (`FORECASTER_MODEL`, `ECONOMY_MODEL`, `HELPER_MODEL`). A daily job (`model_watch.py`) lists Anthropic's models and records any released after the current forecaster.
+
+## Experiments
+
+The three submitted forecasts are control, control, challenger (`experiment.py`). The controls use the unchanged template prompt; the challenger uses the prompt variant under test (`CHALLENGER_VARIANT`). The median of the three always lies within the two controls' range, so a test cannot push the submitted forecast outside what the controls said. Shadow forecasts from cheaper models can be switched on (`SHADOW_FORECASTS`, `SHADOWS_UNTIL`); they are logged and never submitted.
+
+## Records and track record
+
+Everything the bot does is saved to the [`bot-data` branch](../../tree/bot-data):
+
+- `runs/` holds one record per question: the research briefing and every slot's forecast and reasoning.
+- `status/` holds the latest run status, a heartbeat, and the model check.
+- `track_record/` holds a daily snapshot of the bot's rank and score on the tournament leaderboard.
+- `reviews/` holds the weekly review of resolved questions.
+
+## Budget guard
+
+`budget.py` tracks the bot's spend per API credit cycle. It steps down to cheaper models at 70% and 90% of the budget and stops at 100%. Defaults: $200 per cycle renewing on the 27th (UTC), $25 per run. Override with `BUDGET_USD`, `BUDGET_CYCLE_DAY`, `BUDGET_PER_RUN_USD`.
 
 Everything below is the original template README.
 
