@@ -2,7 +2,6 @@
 
 A hobbyist forecasting bot for the Metaculus FutureEval bot tournaments, forked from the Metaculus template.
 
-- Metaculus profile: https://www.metaculus.com/accounts/profile/metaculus-firefly26710/
 - Fall 2026 leaderboard: https://www.metaculus.com/tournament/fall-futureeval-2026/
 
 ## How it forecasts
