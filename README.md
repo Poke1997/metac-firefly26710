@@ -1,3 +1,15 @@
+# metaculus-firefly26710
+
+A hobbyist forecasting bot for the Metaculus FutureEval bot tournaments, forked from the Metaculus template. What this fork changes:
+
+- **Models:** all Claude, called directly with `ANTHROPIC_API_KEY`. Claude Fable 5.2 forecasts each question three times and the median is submitted; Claude Sonnet 5.5 does the research, summarising and output parsing.
+- **Research:** a web-search briefing from Claude (current status, resolution source, base rates, scheduled events, market prices), plus AskNews summaries when AskNews credentials are set.
+- **Budget guard (`budget.py`):** the bot tracks its own spend per credit cycle and steps down to cheaper models at 70% and 90% of the budget, then stops at 100%. Defaults: $200 per cycle renewing on the 27th (UTC), $25 per run. Override with the repository variables `BUDGET_USD`, `BUDGET_CYCLE_DAY`, `BUDGET_PER_RUN_USD`.
+
+Everything below is the original template README.
+
+---
+
 # Simple Metaculus forecasting bot
 This repository contains a simple bot meant to get you started with creating your own bot for the AI Forecasting Tournament. Go to https://www.metaculus.com/futureeval/participate/ for more info and tournament rules (and then go to the  "Getting Started" section of our [resources](https://www.metaculus.com/notebooks/38928/ai-benchmark-resources/#want-to-join-the-ai-forecasting-benchmark) page).
 
