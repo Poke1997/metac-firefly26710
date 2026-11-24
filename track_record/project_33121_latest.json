@@ -1,5 +1,5 @@
 {
-  "time_utc": "2026-11-23T01:48:29+00:00",
+  "time_utc": "2026-11-24T05:21:58+00:00",
   "project_id": 33121,
   "project_name": "Fall 2026 FutureEval Bot Tournament",
   "username": null,
@@ -7,7 +7,7 @@
   "score": null,
   "questions_counted": null,
   "prize": null,
-  "ranked_entries": 596,
+  "ranked_entries": 606,
   "score_type": "spot_peer_tournament",
   "finalized": false
 }
