@@ -1,8 +1,8 @@
 {
-  "run_id": "20261125T093048Z_45586055639",
+  "run_id": "20261125T153045Z_45645931042",
   "mode": "tournament",
-  "started_utc": "2026-11-25T09:30:48+00:00",
-  "finished_utc": "2026-11-25T09:30:59+00:00",
+  "started_utc": "2026-11-25T15:30:45+00:00",
+  "finished_utc": "2026-11-25T15:31:02+00:00",
   "tier": "full",
   "forecaster_model": "anthropic/claude-fable-5-2",
   "slots": [
@@ -15,9 +15,7 @@
     "shadow_forecaster_medium_1"
   ],
   "questions_forecast": 0,
-  "errors": [
-    "run stopped: HTTPError: HTTPError. Url: https://www.metaculus.com/api/posts/?limit=100&offset=0&order_by=-published_time&with_cp=true&include_conditional_cps=true&forecast_type=binary&forecast_type=numeric&forecast_type=multiple_choice&forecast_type=date&forecast_type=discrete&forecast_type=conditional&forecast_type=group_of_questions&statuses=open&tournaments=33121. Status code: 403. Response reason: Forbidden. Response text: Permission Error: The API is only available to authenticated users. P"
-  ],
+  "errors": [],
   "run_cost_usd": 0,
   "cycle_spent_usd": 66.7061,
   "cycle_budget_usd": 200.0,
