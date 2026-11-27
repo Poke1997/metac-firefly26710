@@ -1,8 +1,8 @@
 {
-  "run_id": "20261127T090053Z_45970139382",
+  "run_id": "20261127T120051Z_45995074041",
   "mode": "tournament",
-  "started_utc": "2026-11-27T09:00:53+00:00",
-  "finished_utc": "2026-11-27T09:02:16+00:00",
+  "started_utc": "2026-11-27T12:00:51+00:00",
+  "finished_utc": "2026-11-27T12:02:52+00:00",
   "tier": "full",
   "forecaster_model": "anthropic/claude-fable-5-2",
   "slots": [
@@ -12,8 +12,8 @@
   ],
   "questions_forecast": 1,
   "errors": [],
-  "run_cost_usd": 0.8991,
-  "cycle_spent_usd": 2.0247,
+  "run_cost_usd": 1.3476,
+  "cycle_spent_usd": 3.3723,
   "cycle_budget_usd": 200.0,
   "cycle_start": "2026-11-27"
 }
