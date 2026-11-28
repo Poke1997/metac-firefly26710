@@ -1,8 +1,8 @@
 {
-  "run_id": "20261128T003052Z_46088250046",
+  "run_id": "20261128T093042Z_46130788076",
   "mode": "tournament",
-  "started_utc": "2026-11-28T00:30:52+00:00",
-  "finished_utc": "2026-11-28T00:31:07+00:00",
+  "started_utc": "2026-11-28T09:30:42+00:00",
+  "finished_utc": "2026-11-28T09:30:56+00:00",
   "tier": "full",
   "forecaster_model": "anthropic/claude-fable-5-2",
   "slots": [
