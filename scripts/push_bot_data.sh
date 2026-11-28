@@ -39,7 +39,7 @@ for attempt in 1 2 3; do
             cat "$file" >> "$WORK/$relative"
           fi
           has_news=true ;;
-        runs/*|reviews/*|reports/*|track_record/*)
+        runs/*|reviews/*|reports/*|track_record/*|scores/*)
           cp "$file" "$WORK/$relative"; has_news=true ;;
         *)
           cp "$file" "$WORK/$relative" ;;

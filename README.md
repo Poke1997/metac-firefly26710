@@ -22,6 +22,7 @@ Everything the bot does is saved to the [`bot-data` branch](../../tree/bot-data)
 - `status/` holds the latest run status, a heartbeat, and the model check.
 - `track_record/` holds a daily snapshot of the bot's rank and score on the tournament leaderboard.
 - `reviews/` holds the weekly review of resolved questions.
+- `scores/` holds each slot's score against real outcomes (`score_slots.py`, run daily): `summary.md` compares the challenger with the controls on the same questions. A change is adopted only with at least 100 scored questions and a gain above 2 standard errors.
 
 ## Budget guard
 
