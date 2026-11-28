@@ -1,8 +1,9 @@
 name: Daily housekeeping
 
-# Once a day: check for newer Anthropic models and save the bot's leaderboard
-# standing. Makes no forecasts and uses no LLM tokens. Results go to the
-# bot-data branch (status/models.json and track_record/).
+# Once a day: check for newer Anthropic models, save the bot's leaderboard
+# standing and score the logged forecast slots against outcomes. Makes no
+# forecasts and uses no LLM tokens. Results go to the bot-data branch
+# (status/models.json, track_record/ and scores/).
 on:
   workflow_dispatch:
   schedule:
@@ -42,6 +43,15 @@ jobs:
         continue-on-error: true
         # Numeric Metaculus project ids. 33121 = Fall 2026 FutureEval Bot Tournament.
         run: uv run python track_record.py ${{ vars.TRACK_RECORD_PROJECT_IDS || '33121' }}
+        env:
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+      - name: Score forecast slots against outcomes
+        continue-on-error: true
+        # Reads the saved run records from the bot-data branch and asks Metaculus
+        # how closed questions resolved. Results go to scores/ on bot-data.
+        run: |
+          git clone --quiet --depth 1 --branch bot-data "https://github.com/${GITHUB_REPOSITORY}.git" "$RUNNER_TEMP/bot-data"
+          uv run python score_slots.py --data "$RUNNER_TEMP/bot-data"
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
       - name: Push to the bot-data branch
