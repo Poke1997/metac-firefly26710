@@ -1,0 +1,19 @@
+{
+  "scored_utc": "2026-11-28T02:53:57+00:00",
+  "counts": {
+    "logged": 63,
+    "resolved": 0,
+    "canceled": 0,
+    "scored": 0,
+    "waiting": 63
+  },
+  "challenger_variants_in_data": [
+    "base_rate_first"
+  ],
+  "rule": "adopt only with at least 100 scored questions and a gain above 2 standard errors",
+  "slots": {},
+  "comparisons": {
+    "tournament and MiniBench only": {},
+    "all logged questions": {}
+  }
+}
